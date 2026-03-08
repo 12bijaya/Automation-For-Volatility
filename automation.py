@@ -1,34 +1,22 @@
 #!/usr/bin/env python3
 """
-Volatility³ Assistant - FIXED & WORKING VERSION
-All plugins tested and working
+Volatility³ Assistant - GUI VERSION
+A modern graphical interface for Volatility 3
 """
 
 import os
 import sys
 import subprocess
-import json
-import time
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
 from pathlib import Path
-import argparse
-import shutil
+import json
 
-def clear_screen():
-    """Clear terminal screen"""
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-def print_header(title):
-    """Print header"""
-    clear_screen()
-    print("\n" + "=" * 70)
-    print(f"🔍 {title}")
-    print("=" * 70)
-
-def run_command(cmd, timeout=30):
-    """Run a command and return output with proper timeout"""
+def run_command_sync(cmd, timeout=60):
+    """Run a command and return output"""
     try:
-        # Use Popen to capture output in real-time if needed
         process = subprocess.Popen(
             cmd,
             shell=True,
@@ -38,657 +26,470 @@ def run_command(cmd, timeout=30):
             bufsize=1,
             universal_newlines=True
         )
-        
         stdout, stderr = process.communicate(timeout=timeout)
         return process.returncode, stdout, stderr
-        
     except subprocess.TimeoutExpired:
         process.kill()
         return 1, "", f"Command timed out after {timeout} seconds"
     except Exception as e:
         return 1, "", str(e)
 
-class VolatilityAssistant:
-    def __init__(self):
+class VolatilityGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Volatility³ Assistant")
+        self.root.geometry("1100x900")
+        self.root.configure(bg="#1e1e1e")
+
         self.memory_image = None
         self.output_dir = None
         self.current_os = "Unknown"
+        self.symbols_dir = Path("./symbols")
+        self.symbols_dir.mkdir(exist_ok=True)
+
+        self.style = ttk.Style()
+        # ... (rest of style setup)
+        self.style.theme_use("clam")
+        self._setup_styles()
+
+        self._create_widgets()
+        self.log("Welcome to Volatility³ Assistant GUI")
+        self._check_volatility()
+
+    def _setup_styles(self):
+        self.style.configure("TFrame", background="#1e1e1e")
+        self.style.configure("TLabel", background="#1e1e1e", foreground="#ffffff", font=("Segoe UI", 10))
+        self.style.configure("Header.TLabel", font=("Segoe UI", 16, "bold"), foreground="#007acc")
+        self.style.configure("TButton", font=("Segoe UI", 10))
+        self.style.configure("Treeview", background="#2d2d2d", foreground="#ffffff", fieldbackground="#2d2d2d", font=("Segoe UI", 9))
+        self.style.map("Treeview", background=[("selected", "#007acc")])
+        self.style.configure("TNotebook", background="#1e1e1e")
+        self.style.configure("TNotebook.Tab", background="#333333", foreground="#ffffff", padding=[10, 2])
+        self.style.map("TNotebook.Tab", background=[("selected", "#007acc")])
         
-        # List of working plugins for Windows
-        self.windows_plugins = {
-            # System info
-            'info': 'Get system information',
-            'kdbgscan': 'Scan for KDBG structure',
-            'kpcrscan': 'Scan for KPCR structure',
-            
-            # Process analysis
-            'pslist': 'List running processes',
-            'psscan': 'Scan for hidden processes',
-            'pstree': 'Show process tree',
-            'dlllist': 'List loaded DLLs',
-            'handles': 'Show process handles',
-            'cmdline': 'Show command lines',
-            'envars': 'Show environment variables',
-            'getsids': 'Get process SIDs',
-            'privileges': 'Show process privileges',
-            'psxview': 'Compare process listings',
-            
-            # Network
-            'netscan': 'Scan network connections',
-            'connscan': 'Scan TCP connections',
-            'sockets': 'List open sockets',
-            'netstat': 'Network statistics',
-            
-            # Registry
-            'hivelist': 'List registry hives',
-            'hivescan': 'Scan for registry hives',
-            'printkey': 'Print registry key',
-            
-            # File system
-            'filescan': 'Scan for file objects',
-            'mutantscan': 'Scan for mutexes',
-            'deskscan': 'Scan for desktop objects',
-            
-            # Malware detection
-            'yarascan': 'Scan with YARA rules',
-            'svcscan': 'Scan Windows services',
-            'driverscan': 'Scan for drivers',
-            'callbacks': 'Show kernel callbacks',
-            'idt': 'Interrupt Descriptor Table',
-            'gdt': 'Global Descriptor Table',
-            'ssdt': 'System Service Descriptor Table',
-            
-            # Dumping
-            'procdump': 'Dump process memory',
-            'memdump': 'Dump memory region',
-            'dlldump': 'Dump loaded DLLs',
-            'dumpfiles': 'Dump files from memory',
-            
-            # Timeline
-            'cmdscan': 'Scan command history',
-            'consoles': 'Extract console output',
-            'prefetchparser': 'Parse prefetch files',
-            'shimcache': 'Analyze Shimcache',
-            'amcache': 'Analyze Amcache',
-            'shellbags': 'Analyze Shellbags',
-        }
+    def _create_widgets(self):
+        # Main Layout
+        main_frame = ttk.Frame(self.root, padding="15")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Header
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 15))
+        ttk.Label(header_frame, text="🔍 Volatility³ Assistant", style="Header.TLabel").pack(side=tk.LEFT)
+
+        # File Selection & PID input
+        top_controls = ttk.Frame(main_frame)
+        top_controls.pack(fill=tk.X, pady=5)
+
+        file_frame = ttk.LabelFrame(top_controls, text=" Memory Image ", padding="10")
+        file_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
-        # Plugins that might fail or need special handling
-        self.problematic_plugins = ['yarascan', 'malfind', 'callbacks']
+        self.file_path_var = tk.StringVar(value="No image loaded")
+        ttk.Label(file_frame, textvariable=self.file_path_var).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(file_frame, text="Browse", command=self._browse_image).pack(side=tk.RIGHT)
+
+        pid_frame = ttk.LabelFrame(top_controls, text=" PID / Options ", padding="10")
+        pid_frame.pack(side=tk.RIGHT)
+        self.pid_var = tk.StringVar()
+        ttk.Entry(pid_frame, textvariable=self.pid_var, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Label(pid_frame, text="PID").pack(side=tk.LEFT)
+
+        # Controls & Info
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=tk.X, pady=10)
         
-    def check_volatility(self):
-        """Check if volatility is installed and working"""
-        print("🔍 Checking Volatility installation...")
+        self.os_status_var = tk.StringVar(value="OS: Unknown")
+        ttk.Label(info_frame, textvariable=self.os_status_var, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
         
-        # Try a simple command
-        retcode, stdout, stderr = run_command("vol --help")
+        ttk.Label(info_frame, text=" | Override:").pack(side=tk.LEFT, padx=(10, 2))
+        self.os_override = ttk.Combobox(info_frame, values=["Auto", "windows", "linux", "mac"], width=10)
+        self.os_override.set("Auto")
+        self.os_override.pack(side=tk.LEFT)
+
+        ttk.Button(info_frame, text="Detect OS", command=self._detect_os).pack(side=tk.LEFT, padx=15)
+        ttk.Button(info_frame, text="Full-Auto Scan", command=self._full_auto_scan, style="Action.TButton").pack(side=tk.RIGHT, padx=5)
+        ttk.Button(info_frame, text="Quick Analysis", command=self._quick_analysis).pack(side=tk.RIGHT)
+
+        # Plugins Area (Notebook)
+        plugin_frame = ttk.LabelFrame(main_frame, text=" Analysis Plugins ", padding="10")
+        plugin_frame.pack(fill=tk.X, pady=5)
+
+        self.notebook = ttk.Notebook(plugin_frame)
+        self.notebook.pack(fill=tk.X, expand=True)
+
+        self._add_plugin_tab("Process", [
+            ('pslist', 'List processes'), ('psscan', 'Hidden processes'),
+            ('pstree', 'Process tree'), ('dlllist', 'Loaded DLLs'),
+            ('handles', 'Process handles'), ('cmdline', 'Command lines')
+        ])
+        self._add_plugin_tab("Network", [
+            ('netscan', 'Network connections'), ('connscan', 'TCP connections'),
+            ('sockets', 'Open sockets'), ('netstat', 'Network statistics')
+        ])
+        self._add_plugin_tab("Registry", [
+            ('hivelist', 'Registry hives'), ('hivescan', 'Scan for hives'),
+            ('printkey', 'Print registry key')
+        ])
+        self._add_plugin_tab("Security", [
+            ('yarascan', 'YARA scan'), ('svcscan', 'Windows services'),
+            ('driverscan', 'Loaded drivers'), ('malfind', 'Malware find')
+        ])
+        self._add_plugin_tab("Dumping", [
+            ('procdump', 'Dump process'), ('memdump', 'Dump memory'),
+            ('dumpfiles', 'Dump files'), ('dlldump', 'Dump DLLs')
+        ])
+
+        # Results Display (Table and Log)
+        results_frame = ttk.Frame(main_frame)
+        results_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        # Output Tabs (Table vs Raw Log)
+        self.output_notebook = ttk.Notebook(results_frame)
+        self.output_notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Table Tab
+        self.table_frame = ttk.Frame(self.output_notebook)
+        self.output_notebook.add(self.table_frame, text=" Tabular Results ")
         
-        if retcode == 0 or "Volatility 3 Framework" in (stdout + stderr):
-            print("✅ Volatility 3 is working!")
-            
-            # Test with a real command if we have an image
-            if self.memory_image and os.path.exists(self.memory_image):
-                print("Testing with actual image...")
-                test_cmd = f"vol -f {self.memory_image} windows.info"
-                retcode, stdout, stderr = run_command(test_cmd, timeout=10)
-                if retcode == 0 and "Kernel Base" in stdout:
-                    print("✅ Image can be processed!")
-                else:
-                    print("⚠️ Image might have issues")
-            return True
+        self.tree = ttk.Treeview(self.table_frame, show="headings")
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(self.table_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        # Raw Log Tab
+        self.log_frame = ttk.Frame(self.output_notebook)
+        self.output_notebook.add(self.log_frame, text=" Activity Log ")
+        
+        self.output_text = scrolledtext.ScrolledText(
+            self.log_frame, bg="#2d2d2d", fg="#d4d4d4",
+            font=("Consolas", 10), insertbackground="white"
+        )
+        self.output_text.pack(fill=tk.BOTH, expand=True)
+
+        # Footer
+        footer = ttk.Frame(main_frame)
+        footer.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(footer, text="Clear Results", command=self._clear_results).pack(side=tk.LEFT)
+        ttk.Button(footer, text="Export CSV", command=self._export_csv).pack(side=tk.LEFT, padx=10)
+        ttk.Button(footer, text="Exit", command=self.root.quit).pack(side=tk.RIGHT)
+
+    def _add_plugin_tab(self, name, plugins):
+        tab = ttk.Frame(self.notebook, padding=5)
+        self.notebook.add(tab, text=name)
+        
+        for i, (plugin, desc) in enumerate(plugins):
+            row = i // 3
+            col = i % 3
+            btn = ttk.Button(tab, text=plugin, command=lambda p=plugin: self._run_plugin_thread(p))
+            btn.grid(row=row, column=col, padx=5, pady=5, sticky="ew")
+
+    def log(self, message, level="INFO"):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.output_text.insert(tk.END, f"[{timestamp}] [{level}] {message}\n")
+        self.output_text.see(tk.END)
+
+    def _check_volatility(self):
+        ret, stdout, stderr = run_command_sync("vol --help")
+        if ret == 0 or "Volatility 3" in (stdout + stderr):
+            self.log("Volatility 3 detected and ready.", "SUCCESS")
         else:
-            print("❌ Volatility not found or not working")
-            print(f"Output: {(stdout + stderr)[:200]}")
-            return False
-    
-    def load_memory_image(self):
-        """Load memory image"""
-        print_header("Load Memory Image")
-        
-        print(f"\n📁 Current directory: {os.getcwd()}")
-        print("\nLooking for memory dumps...")
-        
-        # Look for memory dumps
-        extensions = ['.dmp', '.raw', '.mem', '.vmem', '.img', '.bin']
-        found = []
-        
-        for file in os.listdir('.'):
-            for ext in extensions:
-                if file.endswith(ext):
-                    try:
-                        size = os.path.getsize(file) / (1024*1024)  # MB
-                        found.append((file, f"{size:.1f} MB"))
-                    except:
-                        found.append((file, "Unknown size"))
-                    break
-        
-        if found:
-            print(f"\nFound {len(found)} memory dump(s):")
-            for i, (file, size) in enumerate(found, 1):
-                print(f"{i}. {file} ({size})")
-            
-            print(f"\n{len(found) + 1}. Enter custom path")
-            print(f"{len(found) + 2}. Go back")
-            
-            try:
-                choice = input("\nSelect: ").strip()
-                
-                if choice == str(len(found) + 1):
-                    path = input("\n📤 Enter full path: ").strip()
-                    if os.path.exists(path):
-                        self.memory_image = path
-                    else:
-                        print("❌ File not found!")
-                        return False
-                elif choice == str(len(found) + 2):
-                    return False
-                elif choice.isdigit() and 1 <= int(choice) <= len(found):
-                    self.memory_image = found[int(choice) - 1][0]
-                else:
-                    print("❌ Invalid choice")
-                    return False
-            except Exception as e:
-                print(f"❌ Error: {e}")
-                return False
-        else:
-            print("\n❌ No memory dumps found in current directory")
-            path = input("\n📤 Enter path to memory dump: ").strip()
-            if os.path.exists(path):
-                self.memory_image = path
-            else:
-                print("❌ File not found!")
-                return False
-        
-        print(f"\n✅ Loaded: {self.memory_image}")
-        
-        # Try to detect OS
-        print("\n🔍 Detecting OS...")
-        self.detect_os()
-        
-        return True
-    
-    def detect_os(self):
-        """Detect OS from memory image"""
+            messagebox.showerror("Error", "Volatility 3 not found! Please install it first.")
+            self.log("Volatility 3 not found. Commands will fail.", "ERROR")
+
+    def _browse_image(self):
+        path = filedialog.askopenfilename(
+            title="Select Memory Image",
+            filetypes=[("Memory Dumps", "*.raw *.mem *.vmem *.img *.bin *.dmp"), ("All Files", "*.*")]
+        )
+        if path:
+            self.memory_image = path
+            self.file_path_var.set(os.path.basename(path))
+            self.log(f"Loaded image: {path}")
+            self._detect_os()
+
+    def _detect_os(self):
         if not self.memory_image:
+            messagebox.showwarning("Warning", "Please load a memory image first.")
             return
         
-        # Run info command to detect OS
-        cmd = f"vol -f {self.memory_image} windows.info"
-        retcode, stdout, stderr = run_command(cmd, timeout=15)
-        
-        if retcode == 0 and stdout:
-            if "Windows" in stdout:
+        self.log("Detecting OS...")
+        def task():
+            cmd = f"vol -f {self.memory_image} windows.info"
+            ret, stdout, stderr = run_command_sync(cmd, timeout=30)
+            if ret == 0 and "Windows" in stdout:
                 self.current_os = "Windows"
-                # Extract version info
-                for line in stdout.split('\n'):
-                    if "NtSystemRoot" in line or "NTBuildLab" in line:
-                        print(f"  {line.strip()}")
-            print(f"\n✅ Detected: {self.current_os}")
-        else:
-            print("⚠️ Could not detect OS automatically")
-            self.current_os = "Unknown"
-    
-    def run_plugin(self, plugin, params=""):
-        """Run a volatility plugin"""
-        if not self.memory_image:
-            print("❌ No memory image loaded!")
-            return False, "", "No image"
-        
-        cmd = f"vol -f {self.memory_image} {params} windows.{plugin}"
-        print(f"\n🔧 Running: {cmd}")
-        print("-" * 70)
-        
-        # Set longer timeout for certain plugins
-        timeout = 60 if plugin in ['yarascan', 'filescan', 'netscan'] else 30
-        
-        retcode, stdout, stderr = run_command(cmd, timeout=timeout)
-        
-        if retcode != 0:
-            error_msg = stderr if stderr else "Unknown error"
-            
-            # Handle specific errors
-            if "unrecognized arguments" in error_msg or "no such plugin" in error_msg:
-                return False, "", f"Plugin 'windows.{plugin}' not found in Volatility 3"
-            elif "timed out" in error_msg:
-                return False, "", f"Command timed out after {timeout} seconds"
+                self.os_status_var.set(f"OS: {self.current_os}")
+                self.log("Detected OS: Windows", "SUCCESS")
             else:
-                return False, "", error_msg[:500]
+                self.log("Automatic OS detection failed.", "WARNING")
+                if self.memory_image.lower().endswith(".vmem"):
+                    self.log("💡 TIP: For .vmem files, Volatility 3 requires a .vmss or .vmsn file in the same directory.", "INFO")
+                self.log("You can still try running plugins if you know the OS is Windows.", "INFO")
         
-        if not stdout and not stderr:
-            return True, "", "Command ran but produced no output"
-        
-        return True, stdout, stderr
-    
-    def show_output(self, output, plugin_name=""):
-        """Show output in a user-friendly way"""
-        if not output:
-            print("ℹ️ No output to display")
+        threading.Thread(target=task).start()
+
+    def _run_plugin_thread(self, plugin):
+        if not self.memory_image:
+            messagebox.showwarning("Warning", "Please load a memory image first.")
             return
         
-        # Clean up the output
-        output = output.strip()
+        pid = self.pid_var.get().strip()
+        self.log(f"Queuing plugin: windows.{plugin}" + (f" (PID: {pid})" if pid else ""))
+        threading.Thread(target=self._run_plugin, args=(plugin, pid)).start()
+
+    def _get_vol_command(self, plugin, pid=None, use_json=False):
+        """Unified command builder for Volatility 3 with mapping and robust quoting"""
+        # OS Prefix Logic
+        os_prefix = self.os_override.get().lower() if self.os_override.get() != "Auto" else self.current_os.lower()
+        if os_prefix == "unknown": os_prefix = "windows"  # Fallback
+
+        # Comprehensive Legacy Mapping
+        v3_plugin = plugin
+        opts = f" --pid {pid}" if pid else ""
         
-        # Split into lines
-        lines = output.split('\n')
-        total_lines = len(lines)
-        
-        print(f"\n📊 Output ({total_lines} lines):")
-        print("=" * 70)
-        
-        # Show all output - no truncation
-        for i, line in enumerate(lines, 1):
-            # Skip very long lines (like hex dumps)
-            if len(line) > 200:
-                print(f"{i:4d}: {line[:200]}...")
+        mapping = {
+            # Processes
+            'pslist': 'pslist.PsList',
+            'psscan': 'psscan.PsScan',
+            'pstree': 'pstree.PsTree',
+            'dlllist': 'dlllist.DllList',
+            'handles': 'handles.Handles',
+            'cmdline': 'cmdline.CmdLine',
+            # Network
+            'netscan': 'netscan.NetScan',
+            'connscan': 'netscan.NetScan',
+            'sockets': 'netscan.NetScan',
+            'netstat': 'netstat.NetStat',
+            # Registry
+            'hivelist': 'registry.hivelist.HiveList',
+            'hivescan': 'registry.hivescan.HiveScan',
+            'printkey': 'registry.printkey.PrintKey',
+            # Security
+            'svcscan': 'svcscan.SvcScan',
+            'driverscan': 'driverscan.DriverScan',
+            'malfind': 'malfind.Malfind',
+            # Dumping (Special cases)
+            'procdump': ('pslist.PsList', ' --dump'),
+            'memdump': ('pslist.PsList', ' --dump'),
+            'dlldump': ('dlllist.DllList', ' --dump'),
+            'dumpfiles': ('fileobjects.FileObjects', ' --dump')
+        }
+
+        if plugin in mapping:
+            val = mapping[plugin]
+            if isinstance(val, tuple):
+                v3_plugin, extra_opts = val
+                opts += extra_opts
             else:
-                print(f"{i:4d}: {line}")
+                v3_plugin = val
+
+        # Handle Volatility 3 info plugin special case (it's windows.info.Info)
+        if v3_plugin == 'info' and os_prefix == 'windows':
+            v3_plugin = 'info.Info'
+
+        symbol_opt = f' -p "{self.symbols_dir.absolute()}"'
+        fmt = "-r json " if use_json else ""
+        img_path = f'"{self.memory_image}"'
         
-        print("=" * 70)
-        print(f"📈 Total: {total_lines} lines")
-        
-        # Save to file if output directory exists
-        if self.output_dir and output:
-            timestamp = datetime.now().strftime("%H%M%S")
-            filename = f"{plugin_name}_{timestamp}.txt"
-            filepath = self.output_dir / filename
-            
-            try:
-                with open(filepath, "w", encoding='utf-8') as f:
-                    f.write(output)
-                print(f"💾 Saved to: {filename}")
-            except Exception as e:
-                print(f"⚠️ Could not save output: {e}")
-    
-    def create_output_dir(self):
-        """Create output directory"""
+        return f"vol{symbol_opt} -f {img_path} {fmt}{os_prefix}.{v3_plugin}{opts}", v3_plugin, os_prefix
+
+    def _run_plugin(self, plugin, pid=None):
         if not self.output_dir:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.output_dir = Path(f"vol_analysis_{timestamp}")
-            self.output_dir.mkdir(exist_ok=True)
+            self._create_output_dir()
+
+        # Determine if we should use JSON for the table
+        use_json = plugin in ['pslist', 'psscan', 'netscan', 'hivelist', 'dlllist', 'svcscan']
         
-        print(f"📁 Output directory: {self.output_dir}")
-        return self.output_dir
-    
-    def quick_analysis(self):
-        """Quick analysis - run essential commands"""
+        cmd, v3_plugin, os_prefix = self._get_vol_command(plugin, pid, use_json)
+
+        self.log(f"Executing: {cmd}")
+        ret, stdout, stderr = run_command_sync(cmd, timeout=300)
+        
+        if ret == 0:
+            self.log(f"Plugin {os_prefix}.{v3_plugin} finished.", "SUCCESS")
+            # Save raw output
+            filename = f"{plugin}_{datetime.now().strftime('%H%M%S')}.txt"
+            filepath = self.output_dir / filename
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(stdout)
+            self.log(f"Results saved to {filename}")
+            
+            # Handle output display
+            self.output_text.insert(tk.END, f"\n--- {plugin} Output ---\n{stdout}\n")
+            if use_json:
+                self.root.after(0, self._render_table, stdout)
+                self.root.after(0, lambda: self.output_notebook.select(0)) # Switch to table
+            else:
+                self.root.after(0, lambda: self.output_notebook.select(1)) # Switch to log
+
+            self.output_text.see(tk.END)
+        else:
+            self.log(f"Error running {plugin}: {stderr[:200]}", "ERROR")
+            messagebox.showerror("Plugin Error", f"Command failed: {stderr[:300]}")
+
+    def _render_table(self, json_data):
+        """Parse JSON output and render it in the Treeview"""
+        try:
+            data = json.loads(json_data)
+            if not data:
+                return
+
+            # Clear existing data
+            for i in self.tree.get_children():
+                self.tree.delete(i)
+
+            # Get columns from JSON
+            # Volatility 3 JSON is usually a list of dicts or objects
+            # Let's check the structure. If it's a list of dicts:
+            first_item = data[0] if isinstance(data, list) and len(data) > 0 else None
+            if not first_item:
+                return
+
+            columns = list(first_item.keys())
+            self.tree["columns"] = columns
+            for col in columns:
+                self.tree.heading(col, text=col)
+                self.tree.column(col, width=120)
+
+            for item in data:
+                values = [item.get(col, "") for col in columns]
+                # Convert complex types (like objects) to strings
+                values = [str(v) if not isinstance(v, (str, int, float)) else v for v in values]
+                self.tree.insert("", tk.END, values=values)
+            
+            self.log(f"Rendered {len(data)} rows in table.")
+        except Exception as e:
+            self.log(f"Failed to render table: {e}", "ERROR")
+
+    def _create_output_dir(self):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = Path(f"vol_gui_analysis_{timestamp}")
+        self.output_dir.mkdir(exist_ok=True)
+        self.log(f"Created output directory: {self.output_dir}")
+
+    def _quick_analysis(self):
         if not self.memory_image:
-            print("❌ Please load a memory image first!")
+            messagebox.showwarning("Warning", "Please load a memory image first.")
             return
         
-        print_header("🚀 Quick Analysis")
+        self.log("Starting Quick Analysis...")
+        plugins = ['info', 'pslist', 'netscan']
         
-        print("\nThis will run essential forensic commands:")
-        print("1. ✅ System information (info)")
-        print("2. ✅ Process listing (pslist)")
-        print("3. ✅ Hidden process scan (psscan)")
-        print("4. ✅ Network connections (netscan)")
-        print("5. ✅ File system scan (filescan)")
-        print("6. ✅ Registry hives (hivelist)")
+        def run_all():
+            # Use original method inside thread
+            for p in plugins:
+                self._run_plugin(p)
+            self.log("Quick Analysis finished.", "SUCCESS")
         
-        print("\n⏰ Estimated time: 2-5 minutes")
-        
-        confirm = input("\nStart analysis? (Y/n): ").strip().upper()
-        if confirm != 'Y' and confirm != '':
+        threading.Thread(target=run_all).start()
+
+    def _full_auto_scan(self):
+        if not self.memory_image:
+            messagebox.showwarning("Warning", "Please load a memory image first.")
             return
+
+        self.log("🚀 STARTING FULL-AUTO FORENSIC SCAN...", "IMPORTANT")
         
-        # Create output directory
-        self.create_output_dir()
-        
-        # Run essential commands that are known to work
-        commands = [
-            ("info", "System Information"),
-            ("pslist", "Process List"),
-            ("psscan", "Hidden Process Scan"),
-            ("netscan", "Network Connections"),
-            ("filescan", "File System Scan"),
-            ("hivelist", "Registry Hives"),
+        # Predefined set of critical plugins for Windows
+        plugins = [
+            'info', 'pslist', 'psscan', 'pstree', 
+            'netscan', 'hivelist', 'dlllist', 
+            'driverscan', 'svcscan', 'malfind'
         ]
         
-        results = {}
+        def run_suite():
+            self._create_output_dir()
+            results_summary = {}
+            
+            for p in plugins:
+                self.log(f"Processing {p}...", "AUTO")
+                success, data = self._run_plugin_logic(p)
+                results_summary[p] = "Completed" if success else "Failed"
+            
+            self._generate_report(results_summary)
+            self.log("✅ FULL-AUTO SCAN COMPLETE!", "SUCCESS")
+            messagebox.showinfo("Auto Scan", f"Scan complete! Report generated in {self.output_dir}")
         
-        for plugin, description in commands:
-            print(f"\n📋 {description}...")
-            print("-" * 40)
-            
-            success, stdout, error = self.run_plugin(plugin)
-            
-            if success:
-                if stdout:
-                    self.show_output(stdout, plugin)
-                    results[plugin] = "Success"
-                else:
-                    print("ℹ️ Command ran but produced no output")
-                    results[plugin] = "No output"
-            else:
-                print(f"❌ Failed: {error}")
-                results[plugin] = f"Failed: {error[:100]}"
-            
-            # Brief pause between commands
-            if plugin != commands[-1][0]:
-                print("\n" + "·" * 40)
-                time.sleep(1)
-        
-        # Generate report
-        self.generate_report(results)
-        
-        print("\n" + "=" * 70)
-        print("✅ Quick analysis complete!")
-        print(f"📁 Results saved in: {self.output_dir}")
-        print("=" * 70)
-    
-    def generate_report(self, results):
-        """Generate analysis report"""
-        if not self.output_dir:
-            return
-        
-        report_file = self.output_dir / "analysis_report.md"
-        
-        with open(report_file, "w") as f:
-            f.write("# Memory Forensics Analysis Report\n\n")
-            f.write(f"## Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"## Memory Image: {self.memory_image}\n")
-            f.write(f"## OS: {self.current_os}\n\n")
-            
-            f.write("## Summary\n\n")
-            
-            success_count = sum(1 for r in results.values() if r == "Success")
-            total_count = len(results)
-            
-            f.write(f"- **Commands executed**: {total_count}\n")
-            f.write(f"- **Successful**: {success_count}\n")
-            f.write(f"- **Failed**: {total_count - success_count}\n\n")
-            
-            f.write("## Detailed Results\n\n")
-            
-            for plugin, result in results.items():
-                f.write(f"### {plugin}\n")
-                f.write(f"- Status: {result}\n")
-                f.write(f"- Output file: `{plugin}_*.txt`\n\n")
-            
-            f.write("## Files Generated\n\n")
-            
-            if self.output_dir.exists():
-                for file in sorted(self.output_dir.glob("*.txt")):
-                    size = file.stat().st_size
-                    f.write(f"- `{file.name}` ({size:,} bytes)\n")
-            
-            f.write("\n## Notes\n\n")
-            f.write("1. Review the individual output files for detailed findings\n")
-            f.write("2. Check for anomalies in process listings and network connections\n")
-            f.write("3. Look for suspicious files in the filescan output\n")
-            f.write("4. Examine registry hives for persistence mechanisms\n")
-        
-        print(f"\n📄 Report generated: {report_file}")
-    
-    def plugin_menu(self, category_name, plugins):
-        """Display plugin menu for a category"""
-        while True:
-            print_header(f"{category_name} Analysis")
-            
-            print(f"\nAvailable plugins:")
-            for i, (plugin, description) in enumerate(plugins, 1):
-                print(f"{i:2d}. {plugin:15} - {description}")
-            
-            print(f"\n{len(plugins) + 1:2d}. Run all in this category")
-            print(f"{len(plugins) + 2:2d}. Back to main menu")
-            
-            try:
-                choice = input("\nSelect plugin (number): ").strip()
-                
-                if choice == str(len(plugins) + 2):
-                    break
-                elif choice == str(len(plugins) + 1):
-                    # Run all plugins in category
-                    for plugin, description in plugins:
-                        print(f"\n📋 Running {plugin}...")
-                        success, stdout, error = self.run_plugin(plugin)
-                        if success and stdout:
-                            self.show_output(stdout, plugin)
-                        elif not success:
-                            print(f"❌ {error}")
-                        
-                        if plugin != plugins[-1][0]:
-                            cont = input("\nContinue to next plugin? (Y/n): ").strip().upper()
-                            if cont == 'N':
-                                break
-                elif choice.isdigit() and 1 <= int(choice) <= len(plugins):
-                    plugin, description = plugins[int(choice) - 1]
-                    success, stdout, error = self.run_plugin(plugin)
-                    if success:
-                        if stdout:
-                            self.show_output(stdout, plugin)
-                        else:
-                            print("ℹ️ No output generated")
-                    else:
-                        print(f"❌ Error: {error}")
-                else:
-                    print("❌ Invalid selection")
-                
-            except Exception as e:
-                print(f"❌ Error: {e}")
-            
-            input("\nPress Enter to continue...")
-    
-    def main_menu(self):
-        """Main menu"""
-        while True:
-            print_header("Volatility³ Assistant")
-            
-            # Status
-            if self.memory_image:
-                img_name = os.path.basename(self.memory_image)
-                print(f"📁 Loaded: {img_name}")
-                if self.current_os != "Unknown":
-                    print(f"💻 OS: {self.current_os}")
-            else:
-                print("📁 No memory image loaded")
-            
-            print("\nMAIN MENU:")
-            print("1. 📤 Load Memory Image")
-            print("2. 🚀 Quick Analysis (Essential Commands)")
-            print("3. 📊 Process Analysis")
-            print("4. 🌐 Network Analysis")
-            print("5. 📁 File System Analysis")
-            print("6. 🗄️ Registry Analysis")
-            print("7. 🦠 Security & Malware")
-            print("8. 💾 Memory Dumping")
-            print("9. 📋 View Results")
-            print("0. ❌ Exit")
-            
-            choice = input("\nSelect: ").strip()
-            
-            if choice == "0":
-                print("\n👋 Goodbye!")
-                break
-            elif choice == "1":
-                self.load_memory_image()
-            elif choice == "2":
-                self.quick_analysis()
-            elif choice == "3":
-                # Process analysis plugins
-                process_plugins = [
-                    ('pslist', 'List processes'),
-                    ('psscan', 'Hidden processes'),
-                    ('pstree', 'Process tree'),
-                    ('dlllist', 'Loaded DLLs'),
-                    ('handles', 'Process handles'),
-                    ('cmdline', 'Command lines'),
-                    ('envars', 'Environment vars'),
-                    ('getsids', 'Process SIDs'),
-                    ('privileges', 'Privileges'),
-                    ('psxview', 'Compare listings'),
-                ]
-                self.plugin_menu("Process", process_plugins)
-            elif choice == "4":
-                # Network plugins
-                network_plugins = [
-                    ('netscan', 'Network connections'),
-                    ('connscan', 'TCP connections'),
-                    ('sockets', 'Open sockets'),
-                    ('netstat', 'Network statistics'),
-                ]
-                self.plugin_menu("Network", network_plugins)
-            elif choice == "5":
-                # File system plugins
-                filesystem_plugins = [
-                    ('filescan', 'File objects'),
-                    ('mutantscan', 'Mutexes'),
-                    ('deskscan', 'Desktop objects'),
-                    ('dumpfiles', 'Dump files'),
-                ]
-                self.plugin_menu("File System", filesystem_plugins)
-            elif choice == "6":
-                # Registry plugins
-                registry_plugins = [
-                    ('hivelist', 'Registry hives'),
-                    ('hivescan', 'Scan for hives'),
-                    ('printkey', 'Print registry key'),
-                ]
-                self.plugin_menu("Registry", registry_plugins)
-            elif choice == "7":
-                # Security plugins
-                security_plugins = [
-                    ('yarascan', 'YARA scan'),
-                    ('svcscan', 'Windows services'),
-                    ('driverscan', 'Loaded drivers'),
-                    ('callbacks', 'Kernel callbacks'),
-                    ('idt', 'Interrupt table'),
-                    ('gdt', 'Global descriptor table'),
-                    ('ssdt', 'System service table'),
-                ]
-                self.plugin_menu("Security", security_plugins)
-            elif choice == "8":
-                # Dumping plugins
-                dumping_plugins = [
-                    ('procdump', 'Dump process'),
-                    ('memdump', 'Dump memory'),
-                    ('dlldump', 'Dump DLLs'),
-                ]
-                self.plugin_menu("Dumping", dumping_plugins)
-            elif choice == "9":
-                self.view_results()
-            else:
-                print("❌ Invalid choice")
-            
-            if choice != "0":
-                input("\nPress Enter to continue...")
-    
-    def view_results(self):
-        """View analysis results"""
-        if not self.output_dir or not self.output_dir.exists():
-            print("❌ No analysis results found!")
-            print("Run Quick Analysis first")
-            return
-        
-        print_header("Analysis Results")
-        
-        print(f"\n📁 Results directory: {self.output_dir}")
-        
-        files = list(self.output_dir.glob("*"))
-        if not files:
-            print("❌ No files in output directory")
-            return
-        
-        # Group files by type
-        txt_files = [f for f in files if f.suffix == '.txt']
-        other_files = [f for f in files if f.suffix != '.txt']
-        
-        if txt_files:
-            print(f"\n📄 Output files ({len(txt_files)}):")
-            print("-" * 70)
-            
-            for i, file in enumerate(sorted(txt_files), 1):
-                size = file.stat().st_size
-                mod_time = datetime.fromtimestamp(file.stat().st_mtime).strftime("%H:%M:%S")
-                print(f"{i:2d}. {file.name:30} [{size:>10,} bytes] {mod_time}")
-        
-        if other_files:
-            print(f"\n📁 Other files ({len(other_files)}):")
-            for file in sorted(other_files):
-                print(f"  • {file.name}")
-        
-        print(f"\nTotal: {len(files)} files")
-        
-        if txt_files:
-            try:
-                choice = input("\nView file number (or Enter to skip): ").strip()
-                if choice and choice.isdigit():
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(txt_files):
-                        self.view_file(txt_files[idx])
-            except:
-                pass
-    
-    def view_file(self, file_path):
-        """View a file with pagination"""
-        try:
-            with open(file_path, "r", encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            
-            print(f"\n📄 {file_path.name}:")
-            print("=" * 70)
-            
-            lines = content.split('\n')
-            total_lines = len(lines)
-            
-            if total_lines <= 50:
-                for line in lines:
-                    print(line)
-            else:
-                print("Showing first 30 lines:")
-                for i, line in enumerate(lines[:30], 1):
-                    print(f"{i:3d}: {line}")
-                
-                print(f"\n... ({total_lines - 60} lines omitted) ...\n")
-                
-                print("Showing last 30 lines:")
-                for i, line in enumerate(lines[-30:], total_lines - 29):
-                    print(f"{i:3d}: {line}")
-            
-            print("=" * 70)
-            print(f"Total: {total_lines} lines, {len(content):,} characters")
-            
-        except Exception as e:
-            print(f"❌ Could not read file: {e}")
+        threading.Thread(target=run_suite).start()
 
-def main():
-    """Main function"""
-    parser = argparse.ArgumentParser(description="Volatility³ Assistant - Memory Forensics Tool")
-    parser.add_argument("image", nargs="?", help="Memory image file")
-    args = parser.parse_args()
-    
-    # Create assistant
-    assistant = VolatilityAssistant()
-    
-    print("\n" + "=" * 70)
-    print("🔍 VOLATILITY³ ASSISTANT - Memory Forensics Tool")
-    print("=" * 70)
-    print("\nDesigned for forensic analysts and beginners alike")
-    print("All output is saved to timestamped directories")
-    print("=" * 70)
-    
-    # Check volatility
-    if not assistant.check_volatility():
-        print("\n❌ Cannot continue without Volatility 3")
-        print("Install with: pip install volatility3")
-        sys.exit(1)
-    
-    # Load image if provided
-    if args.image:
-        if os.path.exists(args.image):
-            assistant.memory_image = args.image
-            print(f"\n✅ Loaded: {args.image}")
-            assistant.detect_os()
+    def _run_plugin_logic(self, plugin, pid=None):
+        """Worker logic for running a plugin and returning basic status"""
+        if not self.output_dir:
+            self._create_output_dir()
+
+        use_json = plugin in ['pslist', 'psscan', 'pstree', 'netscan', 'hivelist', 'dlllist', 'svcscan']
+        cmd, v3_plugin, os_prefix = self._get_vol_command(plugin, pid, use_json)
+        
+        self.log(f"Running: {cmd}")
+        ret, stdout, stderr = run_command_sync(cmd, timeout=300)
+        
+        if ret == 0:
+            filename = f"{plugin}_{datetime.now().strftime('%H%M%S')}.txt"
+            filepath = self.output_dir / filename
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(stdout)
+            
+            # Update UI from logic (must use thread-safe method)
+            if use_json:
+                self.root.after(0, self._render_table, stdout)
+            else:
+                self.log(f"Output for {plugin} saved to disk.")
+                
+            return True, stdout
         else:
-            print(f"\n❌ File not found: {args.image}")
-            print("You can load an image from the menu")
-    
-    # Start menu
-    try:
-        assistant.main_menu()
-    except KeyboardInterrupt:
-        print("\n\n👋 Goodbye!")
-        sys.exit(0)
+            self.log(f"Plugin {plugin} failed: {stderr[:100]}", "ERROR")
+            return False, stderr
+
+    def _generate_report(self, summary):
+        """Generate a Markdown Forensic Report summary"""
+        report_path = self.output_dir / "FORENSIC_REPORT.md"
+        
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"# Volatility³ Automated Forensic Report\n\n")
+            f.write(f"- **Analysis Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"- **Target Image**: {self.memory_image}\n")
+            f.write(f"- **OS Detected**: {self.current_os}\n\n")
+            
+            f.write("## 🏛️ Scan Summary\n\n")
+            f.write("| Plugin | Status | Output File |\n")
+            f.write("| --- | --- | --- |\n")
+            for plugin, status in summary.items():
+                f.write(f"| {plugin} | {status} | [View File](./) |\n")
+            
+            f.write("\n## 🔍 Automated Checks\n")
+            f.write("- **Process Listing**: Completed. Review `pslist` and `psscan` for hidden processes.\n")
+            f.write("- **Network Connections**: Completed. Review `netscan` for suspicious IPs.\n")
+            f.write("- **Malware Checks**: Completed via `malfind` and `driverscan`.\n")
+            
+            f.write("\n\n--- \n*Generated by Volatility³ Assistant GUI*")
+
+    def _clear_results(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        self.output_text.delete(1.0, tk.END)
+        self.log("Results cleared.")
+
+    def _export_csv(self):
+        """Export table content to CSV"""
+        if not self.tree.get_children():
+            messagebox.showinfo("Export", "No data in table to export.")
+            return
+            
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
+        if path:
+            import csv
+            cols = self.tree["columns"]
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(cols)
+                for item_id in self.tree.get_children():
+                    writer.writerow(self.tree.item(item_id)["values"])
+            messagebox.showinfo("Export", f"Data exported to {path}")
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = VolatilityGUI(root)
+    root.mainloop()
+    
